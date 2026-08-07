@@ -1,0 +1,18 @@
+{
+  "name": "@nexus-core/growth",
+  "version": "1.0.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.0.0"
+  },
+  "devDependencies": {
+  "@types/react": "^18.0.0",  
+    "typescript": "^5.0.0"
+  }
+}

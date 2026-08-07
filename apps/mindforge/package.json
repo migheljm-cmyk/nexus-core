@@ -1,0 +1,32 @@
+{
+  "name": "@nexus/app-mindforge",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nexus-core/growth": "workspace:*",
+    "@nexus/ai-engine": "workspace:*",
+    "@nexus/analytics": "workspace:*",
+    "@nexus/auth": "workspace:*",
+    "@nexus/config": "workspace:*",
+    "@nexus/database": "workspace:*",
+    "@nexus/logger": "workspace:*",
+    "@nexus/ui": "workspace:*",
+    "chess.js": "^1.0.0-beta.6",
+    "next": "latest",
+    "react": "^18",
+    "react-dom": "^18"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^20",
+    "@types/react": "^18",
+    "typescript": "^5"
+  }
+}

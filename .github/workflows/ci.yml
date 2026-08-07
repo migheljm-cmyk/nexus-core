@@ -1,0 +1,38 @@
+name: NEXUS CORE - CI Workflow
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout de repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Configurar Node.js (v20)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Instalar dependencias del workspace
+        run: pnpm install --frozen-lockfile
+
+      - name: Verificación estática de tipos (TypeScript)
+        run: pnpm typecheck
+
+      - name: Instalar navegadores de Playwright
+        run: pnpm --filter @nexus/app-mindforge exec playwright install --with-deps
+
+      - name: Ejecutar pruebas E2E (Playwright)
+        run: pnpm --filter @nexus/app-mindforge exec playwright test
