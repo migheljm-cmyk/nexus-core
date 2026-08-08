@@ -1,6 +1,7 @@
 import { Logger } from '@nexus/logger';
 export * from './telemetry';
-// Eventos estandarizados del Event Bus para todo el ecosistema NEXUS CORE (Épica 4)
+
+// Eventos estandarizados del Event Bus para todo el ecosistema NEXUS CORE
 export type CoreEventType =
   | 'page_loaded'
   | 'user_registered'
@@ -40,10 +41,10 @@ export class NexusAnalytics {
       timestamp: new Date().toISOString(),
     };
 
-    // Registro estructurado con @nexus/logger
+    // Registro estructurado respaldado por el motor de @nexus/logger
     this.logger.info(`[Event: ${eventName}]`, payload);
 
-    // Integración futura con proveedores externos (PostHog, Vercel Analytics, GA4, etc.)
+    // Punto de extensión listo para proveedores externos (PostHog, Vercel Analytics, GA4, etc.)
   }
 
   /**

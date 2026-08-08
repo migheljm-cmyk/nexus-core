@@ -1,20 +1,29 @@
-import { AppConfig, AIProviderType } from '@nexus/config';
+import { Logger } from '@nexus/logger';
+import { NexusAnalytics } from '@nexus/analytics';
 import { AIRequestOptions, AIResponse, AIProviderAdapter } from './types';
-import { GeminiProvider, GroqProvider } from './providers/baseProvider';
+import { AIProviderType } from '@nexus/config';
 
-export class NexusAIEngine {
+export interface AIEngineConfig {
+  defaultProvider: AIProviderType;
+  fallbackProvider?: AIProviderType;
+  appId?: string;
+}
+
+export class AIEngine {
   private providers: Map<AIProviderType, AIProviderAdapter> = new Map();
-  private defaultConfig: AppConfig['ai'];
+  private defaultConfig: AIEngineConfig;
+  private logger: Logger;
+  private analytics: NexusAnalytics;
 
-  constructor(config: AppConfig['ai']) {
+  constructor(config: AIEngineConfig) {
     this.defaultConfig = config;
-    
-    // Registrar proveedores disponibles
-    const gemini = new GeminiProvider();
-    const groq = new GroqProvider();
+    const appId = config.appId || 'ai-engine';
+    this.logger = new Logger(appId);
+    this.analytics = new NexusAnalytics(appId);
+  }
 
-    this.providers.set(gemini.name, gemini);
-    this.providers.set(groq.name, groq);
+  registerProvider(adapter: AIProviderAdapter) {
+    this.providers.set(adapter.name, adapter);
   }
 
   async generate(options: AIRequestOptions): Promise<AIResponse> {
@@ -23,20 +32,45 @@ export class NexusAIEngine {
 
     try {
       const provider = this.providers.get(primaryProviderName);
-      if (!provider) throw new Error(`Proveedor ${primaryProviderName} no configurado.`);
+      if (!provider) {
+        throw new Error(`Proveedor ${primaryProviderName} no configurado.`);
+      }
+
+      const response = await provider.generateText(options);
       
-      return await provider.generateText(options);
+      // Registro de telemetría automático tras éxito
+      this.analytics.trackAIInteraction(
+        'system',
+        response.providerUsed,
+        response.usage?.totalTokens || 0,
+        response.executionTimeMs || 0
+      );
+
+      return response;
     } catch (error) {
-      console.warn(`[NEXUS AI] Falló el proveedor principal (${primaryProviderName}). Ejecutando Fallback...`);
-      
+      this.logger.warn(`Falló el proveedor principal (${primaryProviderName}). Ejecutando Fallback...`, {
+        error: error instanceof Error ? error.message : error,
+      });
+
       if (fallbackProviderName) {
         const fallbackProvider = this.providers.get(fallbackProviderName);
         if (fallbackProvider) {
-          return await fallbackProvider.generateText(options);
+          const response = await fallbackProvider.generateText(options);
+          
+          this.analytics.trackAIInteraction(
+            'system',
+            response.providerUsed,
+            response.usage?.totalTokens || 0,
+            response.executionTimeMs || 0
+          );
+
+          return response;
         }
       }
-      
-      throw new Error(`[NEXUS AI Error]: No se pudo procesar la solicitud con ningún proveedor.`);
+
+      const failureError = new Error(`[NEXUS AI Error]: No se pudo procesar la solicitud con ningún proveedor.`);
+      this.logger.error('Error crítico en AI Engine', { error: failureError });
+      throw failureError;
     }
   }
 }

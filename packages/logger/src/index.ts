@@ -1,4 +1,3 @@
-declare const process: { env: { [key: string]: string | undefined } };
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 
 export interface LogPayload {
@@ -15,13 +14,45 @@ export class Logger {
     this.appId = appId;
   }
 
+  /**
+   * Procesa metadata para extraer correctamente las propiedades de un objeto Error
+   * y ocultar información sensible básica.
+   */
+  private sanitizeMetadata(metadata?: Record<string, unknown>): Record<string, unknown> | undefined {
+    if (!metadata) return undefined;
+
+    const cleaned: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(metadata)) {
+      // Redactar llaves sensibles comunes
+      if (/password|token|secret|authorization/i.test(key)) {
+        cleaned[key] = '[REDACTED]';
+      } 
+      // Formatear instancias de Error
+      else if (value instanceof Error) {
+        cleaned[key] = {
+          name: value.name,
+          message: value.message,
+          stack: value.stack,
+        };
+      } 
+      else {
+        cleaned[key] = value;
+      }
+    }
+
+    return cleaned;
+  }
+
   private format(level: LogLevel, message: string, metadata?: Record<string, unknown>) {
+    const cleanedMetadata = this.sanitizeMetadata(metadata);
+
     return {
       timestamp: new Date().toISOString(),
       appId: this.appId,
       level: level.toUpperCase(),
       message,
-      ...(metadata ? { metadata } : {}),
+      ...(cleanedMetadata ? { metadata: cleanedMetadata } : {}),
     };
   }
 
@@ -38,7 +69,11 @@ export class Logger {
   }
 
   debug(message: string, metadata?: Record<string, unknown>) {
-    if (process.env.NODE_ENV !== 'production') {
+    // Verificación segura del entorno a través de globalThis para evitar fallos de TypeScript
+    const globalProcess = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+    const isProduction = globalProcess?.env?.NODE_ENV === 'production';
+
+    if (!isProduction) {
       console.debug(JSON.stringify(this.format('debug', message, metadata)));
     }
   }

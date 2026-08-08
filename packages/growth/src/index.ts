@@ -41,3 +41,4 @@ export * from './founder-badge';
 export * from './seo';
 export * from './share';
 export * from './types/user';
+export * from './event-bus';

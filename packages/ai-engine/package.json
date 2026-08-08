@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@nexus/config": "workspace:*"
+    "@nexus/config": "workspace:*",
+    "@nexus/logger": "workspace:*",
+    "@nexus/analytics": "workspace:*",
+    "@nexus/database": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.4.0"
