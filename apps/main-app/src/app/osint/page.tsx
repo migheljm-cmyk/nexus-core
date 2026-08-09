@@ -68,7 +68,7 @@ export default function OsintDashboardPage() {
               />
 
               {/* MÓDULOS DE ENRIQUECIMIENTO EN TIEMPO REAL (Domain Risk, SAT 69-B, OpenSanctions) */}
-              {data.modules && (
+              {(data as any)?.modules && (
                 <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4">
                   <OsintReportView report={data} />
                 </div>
@@ -77,7 +77,7 @@ export default function OsintDashboardPage() {
               {/* MATRIZ DE RIESGO & LÍNEA DE TIEMPO / EVIDENCIAS */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <RiskMatrix
-                  risks={(data.riskMatrix || []).map((point: any, index: number) => ({
+                  risks={(((data as any).riskMatrix || []) as any[]).map((point: any, index: number) => ({
                     id: point.id || `risk-${index}`,
                     title: point.title || point.label || `Riesgo ${index + 1}`,
                     category: point.category || 'OSINT',
@@ -87,7 +87,7 @@ export default function OsintDashboardPage() {
                   })) as any}
                 />
                 <EvidenceTimeline 
-                  evidences={(data.evidences || data.timeline || []) as any} 
+                  evidences={((data as any).evidences || data.timeline || []) as any} 
                 />
               </div>
             </>

@@ -10,14 +10,20 @@ import { analyzeGlobalSanctionsAndGeo } from '../../../../lib/osint/providers/op
 import * as DatabasePackage from '@nexus/database';
 import * as AiEnginePackage from '@nexus/ai-engine';
 
+// Dominios de correo gratuito / informal considerados Bandera Roja en B2B
+const FREE_EMAIL_DOMAINS = new Set([
+  'qq.com', '163.com', '126.com', 'gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com'
+]);
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     
     // Soportamos 'targetId' para retrocompatibilidad, así como campos explícitos
     const targetId = body.targetId || body.companyName || body.domain || body.rfc;
-    const domainInput = body.domain;
-    const rfcInput = body.rfc;
+    const domainInput = (body.domain || '').trim();
+    const rfcInput = (body.rfc || '').trim();
+    const emailInput = (body.email || body.contactEmail || '').trim().toLowerCase();
     const mercantileFolioInput = body.mercantileFolio;
     const declaredCountryCode = body.declaredCountryCode || 'MX';
 
@@ -47,13 +53,62 @@ export async function POST(req: NextRequest) {
       console.warn('[OSINT_API] Usando Target fallback para:', targetId);
     }
 
-    // Identificar si la entrada principal es un dominio para los conectores
+    // Identificar si la entrada principal es un dominio
     const isDomainInput = companyName.includes('.') && !companyName.includes(' ');
     const targetDomain = domainInput || (isDomainInput ? companyName : undefined);
     const targetRfc = rfcInput || (taxId !== 'TAX-PENDING-001' ? taxId : undefined);
 
+    let liveEvidences: any[] = [];
+    const matrixFindings: any[] = [];
+    let calculatedRiskScore = 15; // Score base inicial para empresa en evaluación
+
     // -------------------------------------------------------------
-    // 2. EJECUCIÓN PARALELA: LIVE PROSPECTING + ENRICHMENT MODULES
+    // 2. REGLAS DE VALIDACIÓN CRUZADA (CROSS-VALIDATION ENGINE)
+    // -------------------------------------------------------------
+
+    // A. Regla: Email Gratuito / Informal en Entidad Corporativa
+    let isFreeEmail = false;
+    let emailDomain = '';
+    if (emailInput.includes('@')) {
+      emailDomain = emailInput.split('@')[1];
+      if (FREE_EMAIL_DOMAINS.has(emailDomain)) {
+        isFreeEmail = true;
+        calculatedRiskScore += 35;
+
+        matrixFindings.push({
+          id: 'RISK-CROSS-01',
+          title: 'Canal de Correo Gratuito / Informal',
+          category: 'Infraestructura & Red',
+          severity: 'HIGH',
+          description: `Comunicación corporativa vinculada a proveedor gratuito [@${emailDomain}]. Riesgo de suplantación/baja trazabilidad.`
+        });
+
+        liveEvidences.push({
+          id: 'EV-CROSS-01',
+          timestamp: analyzedAt,
+          source: 'Traceability & Communications Engine',
+          category: 'COMMUNICATION' as const,
+          description: `Bandera Roja: Dominio de contacto en proveedor gratuito [@${emailDomain}]. Se sugiere solicitar correo con dominio propio.`,
+          status: 'SUSPICIOUS' as const,
+        });
+      }
+    }
+
+    // B. Regla: Inconsistencia entre Dominio Web Declarado y Correo
+    if (targetDomain && emailDomain && !isFreeEmail && !targetDomain.includes(emailDomain)) {
+      calculatedRiskScore += 20;
+
+      matrixFindings.push({
+        id: 'RISK-CROSS-02',
+        title: 'Discrepancia Dominio Web vs. Email',
+        category: 'Infraestructura & Red',
+        severity: 'MEDIUM',
+        description: `El dominio web [${targetDomain}] no coincide con la extensión del correo registrado [@${emailDomain}].`
+      });
+    }
+
+    // -------------------------------------------------------------
+    // 3. EJECUCIÓN PARALELA: LIVE PROSPECTING + ENRICHMENT MODULES
     // -------------------------------------------------------------
     const [
       ocResResult,
@@ -74,8 +129,6 @@ export async function POST(req: NextRequest) {
       analyzeGlobalSanctionsAndGeo(companyName, targetDomain, declaredCountryCode)
     ]);
 
-    let liveEvidences: any[] = [];
-    let calculatedRiskScore = 20; // Riesgo base inicial
     let ocCompanyFound = false;
 
     // A. Procesamiento OpenCorporates
@@ -99,6 +152,13 @@ export async function POST(req: NextRequest) {
 
           if (!isActive && match.current_status) {
             calculatedRiskScore += 35;
+            matrixFindings.push({
+              id: 'RISK-CORP-01',
+              title: 'Estatus Corporativo Inactivo',
+              category: 'Cumplimiento & Sanciones',
+              severity: 'HIGH',
+              description: `El registro en jurisdicción [${match.jurisdiction_code?.toUpperCase()}] no figura en estado ACTIVO.`
+            });
           }
         } else {
           liveEvidences.push({
@@ -109,7 +169,15 @@ export async function POST(req: NextRequest) {
             description: `No se localizó coincidencia mercantil abierta para "${companyName}". Requiere revisión de actas locales.`,
             status: 'SUSPICIOUS' as const,
           });
-          calculatedRiskScore += 25;
+          calculatedRiskScore += 20;
+
+          matrixFindings.push({
+            id: 'RISK-CORP-02',
+            title: 'Sin Registro Mercantil Abierto Global',
+            category: 'Cumplimiento & Sanciones',
+            severity: 'MEDIUM',
+            description: `Ausencia de coincidencia en índices internacionales públicos bajo el nombre exacto.`
+          });
         }
       } catch (e) {
         console.warn('[OSINT_API] Error al procesar respuesta OpenCorporates:', e);
@@ -148,7 +216,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // C. Procesamiento e Integración de los Módulos de Enriquecimiento (Evidencias y Scores)
+    // C. Módulos de Enriquecimiento (Mapeo a Evidencias y Matriz 3x3)
     const domainRiskData = domainRiskModule.status === 'fulfilled' ? domainRiskModule.value : undefined;
     const satCheckData = satCheckModule.status === 'fulfilled' ? satCheckModule.value : undefined;
     const openSanctionsData = openSanctionsModule.status === 'fulfilled' ? openSanctionsModule.value : undefined;
@@ -156,6 +224,14 @@ export async function POST(req: NextRequest) {
     if (domainRiskData) {
       calculatedRiskScore += domainRiskData.riskScore;
       domainRiskData.flags.forEach((flag, index) => {
+        matrixFindings.push({
+          id: `RISK-DOM-${index}`,
+          title: `Riesgo de Dominio (.${domainRiskData.details.tld})`,
+          category: 'Infraestructura & Red',
+          severity: domainRiskData.riskScore > 40 ? 'HIGH' : 'MEDIUM',
+          description: flag
+        });
+
         liveEvidences.push({
           id: `EV-TLD-${index + 1}`,
           timestamp: analyzedAt,
@@ -170,13 +246,22 @@ export async function POST(req: NextRequest) {
     if (satCheckData) {
       calculatedRiskScore += satCheckData.riskScorePenalty;
       satCheckData.flags.forEach((flag, index) => {
+        const isCritical = satCheckData.satList69B.isListed;
+        matrixFindings.push({
+          id: `RISK-SAT-${index}`,
+          title: `Estatus Fiscal SAT (${satCheckData.rfc})`,
+          category: 'Legal & Fiscal',
+          severity: isCritical ? 'CRITICAL' : 'MEDIUM',
+          description: flag
+        });
+
         liveEvidences.push({
           id: `EV-SAT-${index + 1}`,
           timestamp: analyzedAt,
           source: 'Prospección Nacional SAT / SIGER',
           category: 'FINANCIAL' as const,
           description: flag,
-          status: satCheckData.satList69B.isListed ? 'CRITICAL' : 'SUSPICIOUS'
+          status: isCritical ? ('CRITICAL' as const) : ('SUSPICIOUS' as const)
         });
       });
     }
@@ -184,18 +269,27 @@ export async function POST(req: NextRequest) {
     if (openSanctionsData) {
       calculatedRiskScore += openSanctionsData.riskScorePenalty;
       openSanctionsData.flags.forEach((flag, index) => {
+        const isSanction = openSanctionsData.hasSanctionsMatch;
+        matrixFindings.push({
+          id: `RISK-SANCTION-${index}`,
+          title: isSanction ? 'Sanciones Internacionales' : 'Geolocalización & Servidores',
+          category: 'Cumplimiento & Sanciones',
+          severity: isSanction ? 'CRITICAL' : 'HIGH',
+          description: flag
+        });
+
         liveEvidences.push({
           id: `EV-SANCTION-${index + 1}`,
           timestamp: analyzedAt,
           source: 'OpenSanctions & GeoIP Global Engine',
           category: 'COMPLIANCE' as const,
           description: flag,
-          status: openSanctionsData.hasSanctionsMatch ? 'CRITICAL' : 'SUSPICIOUS'
+          status: isSanction ? ('CRITICAL' as const) : ('SUSPICIOUS' as const)
         });
       });
     }
 
-    // Evento de Sello Criptográfico por defecto
+    // Evento de Sello Criptográfico
     liveEvidences.push({
       id: 'EV-AUDIT-SHA256',
       timestamp: analyzedAt,
@@ -206,31 +300,28 @@ export async function POST(req: NextRequest) {
     });
 
     // -------------------------------------------------------------
-    // 3. EJECUCIÓN DE AI ENGINE & DICTAMEN FINAL
+    // 4. EJECUCIÓN DE AI ENGINE & DICTAMEN FINAL (ACCESO BLINDADO)
     // -------------------------------------------------------------
     let riskScore = Math.min(100, Math.max(10, calculatedRiskScore));
-    let verdict = ocCompanyFound 
-      ? `Dictamen OSINT para ${companyName}: Entidad identificada en registros corporativos globales. Nivel de riesgo estimado: ${riskScore}/100.`
-      : `Dictamen preventivo para ${companyName}: Sin coincidencia directa en índices mercantiles internacionales. Se sugiere verificación documental adicional.`;
+    let verdict = riskScore > 50
+      ? `ALERTA DE RIESGO B2B (${riskScore}/100): Se identificaron inconsistencias operativas o banderas rojas en la entidad ${companyName}. Se recomienda auditoría documental extendida.`
+      : `DICTAMEN FAVORABLE (${riskScore}/100): La entidad ${companyName} no presenta coincidencias en listas de sanciones ni banderas rojas críticas en sus fuentes públicas.`;
       
-    let keyFindings = [
-      ocCompanyFound 
-        ? 'Entidad localizada con número de registro corporativo activo.'
-        : 'Ausencia de registro mercantil público internacional bajo el nombre especificado.',
-      targetDomain ? `Evaluación de riesgo de dominio [${targetDomain}] completada.` : 'Sin dominio de red directo analizado.',
-      'Auditoría y trazabilidad criptográfica completada.',
-    ];
-
-    if (satCheckData?.satList69B.isListed) {
-      keyFindings.unshift(`ALERTA FISCAL: Registrado en listas de la consulta Art. 69-B del SAT (${satCheckData.satList69B.status}).`);
-    }
-
-    if (openSanctionsData?.hasSanctionsMatch) {
-      keyFindings.unshift(`ALERTA DE CUMPLIMIENTO: Coincidencia en listas internacionales de sanciones.`);
-    }
+    let keyFindings = matrixFindings.length > 0
+      ? matrixFindings.map(m => m.description)
+      : [
+          ocCompanyFound 
+            ? 'Entidad localizada con número de registro corporativo activo.'
+            : 'Ausencia de registro mercantil público internacional bajo el nombre especificado.',
+          targetDomain ? `Evaluación de riesgo de dominio [${targetDomain}] completada.` : 'Sin dominio de red directo analizado.',
+          'Auditoría y trazabilidad criptográfica completada.',
+        ];
 
     try {
-      const aiEngine = (AiEnginePackage as any).OsintEngineService;
+      // Invocación segura sin presuponer la estructura exacta exportada por @nexus/ai-engine
+      const pkg = AiEnginePackage as any;
+      const aiEngine = pkg.OsintEngineService || pkg.default || pkg;
+
       if (aiEngine && typeof aiEngine.analyzeTarget === 'function') {
         const aiResult = await aiEngine.analyzeTarget({ companyName, taxId });
         verdict = aiResult.executiveSummary || verdict;
@@ -242,16 +333,16 @@ export async function POST(req: NextRequest) {
     }
 
     // -------------------------------------------------------------
-    // 4. ESTRUCTURACIÓN DE CONTRATOS Y RESUMEN DE ALERTAS
+    // 5. ESTRUCTURACIÓN DE CONTRATOS, MATRIZ Y SELLADO
     // -------------------------------------------------------------
     const reportId = `REP-${Math.floor(100000 + Math.random() * 900000)}`;
     const caseId = `CASE-${reportId.slice(4)}`;
 
     const flagsCount = {
-      critical: riskScore > 75 ? 1 : (satCheckData?.satList69B.isListed || openSanctionsData?.hasSanctionsMatch ? 1 : 0),
-      high: riskScore > 50 && riskScore <= 75 ? 2 : 0,
-      medium: riskScore > 30 && riskScore <= 50 ? 1 : 1,
-      low: riskScore <= 30 ? 2 : 0,
+      critical: matrixFindings.filter(m => m.severity === 'CRITICAL').length,
+      high: matrixFindings.filter(m => m.severity === 'HIGH').length,
+      medium: matrixFindings.filter(m => m.severity === 'MEDIUM').length,
+      low: matrixFindings.filter(m => m.severity === 'LOW').length,
     };
 
     const summary = {
@@ -266,20 +357,16 @@ export async function POST(req: NextRequest) {
       analyzedAt,
     };
 
-    const evidences = liveEvidences;
-
-    // Objeto con módulos estructurados para clientes que consuman el contrato ampliado
     const enrichmentModules = {
       domainRisk: domainRiskData,
       satCheck: satCheckData,
       openSanctions: openSanctionsData
     };
 
-    // 5. Sellado Criptográfico SHA-256
-    const payloadToHash = { caseId, summary, evidences, enrichmentModules };
+    // Sellado Criptográfico SHA-256
+    const payloadToHash = { caseId, summary, evidences: liveEvidences, riskMatrix: matrixFindings, enrichmentModules };
     const hashSha256 = await generatePayloadHash(payloadToHash);
 
-    // 6. Respuesta exitosa conservando contrato previo + módulos de enriquecimiento (Status 201)
     return NextResponse.json(
       {
         success: true,
@@ -287,7 +374,9 @@ export async function POST(req: NextRequest) {
         reportId,
         targetId,
         summary,
-        evidences,
+        evidences: liveEvidences,
+        timeline: liveEvidences, // Duplicado explícito para que EvidenceTimeline.tsx siempre tenga datos
+        riskMatrix: matrixFindings, // Datos directos para popular RiskMatrix.tsx (Matriz 3x3)
         modules: enrichmentModules,
         hashSha256,
       },
