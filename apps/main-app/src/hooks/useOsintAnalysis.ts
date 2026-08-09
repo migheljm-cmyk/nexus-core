@@ -5,9 +5,13 @@ import { useState, useCallback } from 'react';
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
 export interface RiskMatrixPoint {
-  impact: 1 | 2 | 3;     // 1: Bajo, 2: Medio, 3: Alto
-  probability: 1 | 2 | 3; // 1: Bajo, 2: Medio, 3: Alto
-  label: string;
+  id: string;
+  title: string;
+  category: string;
+  impact: 'LOW' | 'MEDIUM' | 'HIGH';
+  probability: 'LOW' | 'MEDIUM' | 'HIGH';
+  severity: RiskLevel;
+  description: string;
 }
 
 export interface ExecutiveSummary {
@@ -31,9 +35,9 @@ export interface EvidenceEvent {
   id: string;
   timestamp: string;
   source: string;
-  category: 'CORPORATE' | 'GEOLOCATION' | 'COMMUNICATION' | 'FINANCIAL';
+  category: 'CORPORATE' | 'GEOLOCATION' | 'COMMUNICATION' | 'FINANCIAL' | 'COMPLIANCE';
   description: string;
-  status: 'VERIFIED' | 'SUSPICIOUS' | 'UNVERIFIED';
+  status: 'VERIFIED' | 'SUSPICIOUS' | 'CRITICAL' | 'UNVERIFIED';
 }
 
 export interface OsintAnalysisResult {
@@ -42,13 +46,19 @@ export interface OsintAnalysisResult {
   summary: ExecutiveSummary;
   riskMatrix: RiskMatrixPoint[];
   timeline: EvidenceEvent[];
+  evidences?: EvidenceEvent[];
+  modules?: any;
 }
 
 export interface OsintFormData {
   targetId?: string;
   companyName?: string;
   taxId?: string;
+  rfc?: string;
+  domain?: string;
+  email?: string;
   domainOrEmail?: string;
+  declaredCountryCode?: string;
 }
 
 export interface UseOsintAnalysisReturn {
@@ -72,6 +82,16 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
   const [data, setData] = useState<OsintAnalysisResult | null>(null);
 
   /**
+   * Mapea el nivel de severidad a cadenas 'LOW' | 'MEDIUM' | 'HIGH' para la Matriz Visual 3x3
+   */
+  const mapSeverityToMatrixCoord = (severity: string): 'LOW' | 'MEDIUM' | 'HIGH' => {
+    const sev = (severity || '').toUpperCase();
+    if (sev === 'CRITICAL' || sev === 'HIGH') return 'HIGH';
+    if (sev === 'MEDIUM') return 'MEDIUM';
+    return 'LOW';
+  };
+
+  /**
    * Ejecuta el análisis OSINT llamando a la API Route /api/osint/analyze
    */
   const runAnalysis = useCallback(async (targetQuery: OsintFormData | string) => {
@@ -79,21 +99,46 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
     setError(null);
 
     try {
-      // Determinar targetId o parámetro de búsqueda
-      let targetId = typeof targetQuery === 'string' ? targetQuery : targetQuery.targetId;
+      // 1. Extraer y construir el Payload completo recolectado por la UI
+      let payload: Record<string, any> = {};
 
-      if (!targetId && typeof targetQuery === 'object') {
-        targetId = targetQuery.companyName || targetQuery.taxId;
+      if (typeof targetQuery === 'string') {
+        payload = {
+          targetId: targetQuery.trim(),
+          companyName: targetQuery.trim(),
+        };
+      } else if (typeof targetQuery === 'object' && targetQuery !== null) {
+        // Manejar correos / dominios combinados en domainOrEmail si el formulario los envía en ese campo
+        let domain = targetQuery.domain || '';
+        let email = targetQuery.email || '';
+
+        if (targetQuery.domainOrEmail) {
+          if (targetQuery.domainOrEmail.includes('@')) {
+            email = targetQuery.domainOrEmail.trim();
+          } else {
+            domain = targetQuery.domainOrEmail.trim();
+          }
+        }
+
+        payload = {
+          targetId: targetQuery.targetId || targetQuery.companyName || targetQuery.taxId || domain || email,
+          companyName: targetQuery.companyName || '',
+          rfc: targetQuery.rfc || targetQuery.taxId || '',
+          domain,
+          email,
+          declaredCountryCode: targetQuery.declaredCountryCode || 'MX',
+        };
       }
 
-      if (!targetId) {
-        throw new Error('Se requiere un ID de objetivo o nombre de empresa válido.');
+      if (!payload.targetId && !payload.companyName && !payload.domain && !payload.rfc && !payload.email) {
+        throw new Error('Se requiere un ID de objetivo, nombre de empresa, dominio o correo válido.');
       }
 
+      // 2. Petición POST con el Payload enriquecido
       const response = await fetch('/api/osint/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetId }),
+        body: JSON.stringify(payload),
       });
 
       const result = await response.json();
@@ -102,20 +147,46 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         throw new Error(result.error || 'Error al ejecutar el análisis OSINT.');
       }
 
-      // Mapear respuesta estandarizada
+      // 3. Transformación y mapeo estricto para RiskMatrix.tsx y EvidenceTimeline.tsx
+      const rawMatrix = result.riskMatrix || result.analysis?.matrixFindings || [];
+      const mappedRiskMatrix: RiskMatrixPoint[] = rawMatrix.map((item: any, idx: number) => {
+        // Si el item viene como string básico
+        if (typeof item === 'string') {
+          return {
+            id: `risk-${idx}`,
+            title: `Hallazgo OSINT #${idx + 1}`,
+            category: 'OSINT',
+            impact: (idx % 2 === 0 ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
+            probability: 'HIGH' as 'LOW' | 'MEDIUM' | 'HIGH',
+            severity: 'HIGH' as RiskLevel,
+            description: item,
+          };
+        }
+
+        const sev = (item.severity || 'MEDIUM').toUpperCase();
+        return {
+          id: item.id || `risk-${idx}`,
+          title: item.title || item.label || `Hallazgo ${idx + 1}`,
+          category: item.category || 'OSINT',
+          impact: mapSeverityToMatrixCoord(sev),
+          probability: item.probability && typeof item.probability === 'string' 
+            ? (item.probability.toUpperCase() as any) 
+            : 'HIGH',
+          severity: (sev === 'CRITICAL' ? 'CRITICAL' : sev === 'HIGH' ? 'HIGH' : sev === 'LOW' ? 'LOW' : 'MEDIUM') as RiskLevel,
+          description: item.description || '',
+        };
+      });
+
+      const rawEvidences = result.evidences || result.timeline || [];
+
       const formattedResult: OsintAnalysisResult = {
         caseId: result.caseId,
         hashSha256: result.hashSha256,
         summary: result.summary,
-        timeline: result.evidences || [],
-        riskMatrix: result.analysis?.matrixFindings?.map((finding: string, idx: number) => ({
-          impact: (idx % 3 + 1) as 1 | 2 | 3,
-          probability: (idx % 2 + 1) as 1 | 2 | 3,
-          label: finding,
-        })) || [
-          { impact: 3, probability: 3, label: 'Inconsistencia de Domicilio Fiscal' },
-          { impact: 3, probability: 2, label: 'Canales de Comunicación No Corporativos' },
-        ],
+        timeline: rawEvidences,
+        evidences: rawEvidences,
+        riskMatrix: mappedRiskMatrix,
+        modules: result.modules,
       };
 
       setData(formattedResult);
@@ -129,7 +200,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
   }, []);
 
   /**
-   * Descarga el reporte PDF criptográfico consumiendo el endpoint de streaming
+   * Descarga el reporte PDF criptográfico
    */
   const downloadPdfReport = useCallback(async () => {
     if (!data) {
@@ -144,7 +215,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
       const payload = {
         caseId: data.caseId,
         summary: data.summary,
-        evidences: data.timeline,
+        evidences: data.timeline || data.evidences,
         hashSha256: data.hashSha256,
       };
 
@@ -159,7 +230,6 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         throw new Error(errorJson.error || 'Error en la generación del PDF.');
       }
 
-      // Procesar blob y forzar descarga binaria en el navegador
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
