@@ -6,6 +6,7 @@ import { OsintForm } from '../../components/osint/OsintForm';
 import { RiskMatrix } from '../../components/osint/RiskMatrix';
 import { ExecutiveSummaryCard } from '../../components/osint/ExecutiveSummaryCard';
 import { EvidenceTimeline } from '../../components/osint/EvidenceTimeline';
+import OsintReportView from './components/OsintReportView';
 
 export default function OsintDashboardPage() {
   const {
@@ -28,7 +29,7 @@ export default function OsintDashboardPage() {
               NEXUS CORE :: OSINT & DUE DILIGENCE B2B
             </h1>
             <p className="text-xs text-slate-400 mt-1">
-              [SYSTEM: ACTIVE] // ENGINE: ACID-CYBER-FORENSICS V2.4
+              [SYSTEM: ACTIVE] // ENGINE: ACID-CYBER-FORENSICS V2.4 + PROACTIVE ENRICHMENT
             </p>
           </div>
           {isAnalyzing && (
@@ -66,7 +67,14 @@ export default function OsintDashboardPage() {
                 onDownloadPdf={downloadPdfReport}
               />
 
-              {/* MATRIZ DE RIESGO & LÍNEA DE TIEMPO */}
+              {/* MÓDULOS DE ENRIQUECIMIENTO EN TIEMPO REAL (Domain Risk, SAT 69-B, OpenSanctions) */}
+              {data.modules && (
+                <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4">
+                  <OsintReportView report={data} />
+                </div>
+              )}
+
+              {/* MATRIZ DE RIESGO & LÍNEA DE TIEMPO / EVIDENCIAS */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <RiskMatrix
                   risks={(data.riskMatrix || []).map((point: any, index: number) => ({
@@ -79,7 +87,7 @@ export default function OsintDashboardPage() {
                   })) as any}
                 />
                 <EvidenceTimeline 
-                  evidences={data.timeline as any} 
+                  evidences={(data.evidences || data.timeline || []) as any} 
                 />
               </div>
             </>
