@@ -159,7 +159,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         throw new Error(result.error || 'Error al ejecutar el análisis OSINT.');
       }
 
-      // 3. Normalización y Mapeo de Banderas Rojas (Capa 3) a la Matriz de Riesgo
+      // 3. Normalización y Mapeo de Banderas Rojas a la Matriz de Riesgo
       const rawFlags = result.riskMatrix || result.summary?.allFlags || result.analysis?.matrixFindings || [];
 
       const mappedRiskMatrix: RiskMatrixPoint[] = rawFlags.map((item: any, idx: number) => {
@@ -183,7 +183,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
           impact: mapSeverityToMatrixCoord(sev),
           probability: item.probability ? (String(item.probability).toUpperCase() as any) : 'HIGH',
           severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(sev) ? sev : 'MEDIUM',
-          description: item.description || '',
+          description: item.description || item.evidence || '',
           evidence: item.evidence || '',
         };
       });
@@ -191,7 +191,6 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
       // 4. Mapeo de Evidencias / Lógica de Tiempo
       const rawEvidences: EvidenceEvent[] = result.evidences || result.timeline || [];
 
-      // Si no vienen evidencias explícitas pero tenemos Capa 1, creamos un evento sintáctico
       if (rawEvidences.length === 0 && result.layer1Technical) {
         rawEvidences.push({
           id: 'ev-layer1',
@@ -203,15 +202,19 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         });
       }
 
-      // 5. Construcción de Resumen Ejecutivo Consolidado
+      // 5. Construcción de Resumen Ejecutivo Consolidado directo desde la Respuesta
       const summary: ExecutiveSummary = {
         targetName: result.summary?.targetName || payload.companyName || payload.domain || 'Objetivo Desconocido',
-        targetTaxId: result.summary?.targetTaxId || payload.rfc || '',
-        globalScore: result.summary?.globalScore ?? (100 - (result.summary?.riskScore ?? 0)),
-        riskScore: result.summary?.riskScore ?? result.summary?.overallRiskScore ?? 0,
-        overallRisk: result.summary?.overallRisk ?? result.summary?.overallRiskLevel ?? 'LOW',
-        verdict: result.summary?.verdict || (result.summary?.riskScore > 40 ? 'Requiere Revisión Manual' : 'Bajo Riesgo Técnico'),
-        keyFindings: result.summary?.keyFindings || result.summary?.criticalAlerts || mappedRiskMatrix.map((m) => m.title),
+        targetTaxId: result.summary?.targetTaxId || payload.rfc || 'TAX-PENDING-001',
+        globalScore: typeof result.summary?.globalScore === 'number' 
+          ? result.summary.globalScore 
+          : (100 - (result.summary?.riskScore ?? 0)),
+        riskScore: typeof result.summary?.riskScore === 'number' 
+          ? result.summary.riskScore 
+          : (result.summary?.overallRiskScore ?? 0),
+        overallRisk: result.summary?.overallRisk || result.summary?.overallRiskLevel || 'LOW',
+        verdict: result.summary?.verdict || 'Dictamen técnico procesado.',
+        keyFindings: result.summary?.keyFindings || mappedRiskMatrix.map((m) => m.description || m.title),
         analyzedAt: result.summary?.analyzedAt || new Date().toISOString(),
         flagsCount: result.summary?.flagsCount || {
           critical: mappedRiskMatrix.filter((m) => m.severity === 'CRITICAL').length,
@@ -233,6 +236,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         modules: result.modules || {},
       };
 
+      // Asignación directa y definitiva al estado
       setData(formattedResult);
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : 'Error al procesar la investigación OSINT.';
