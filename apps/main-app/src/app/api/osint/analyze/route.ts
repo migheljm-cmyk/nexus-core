@@ -1,6 +1,11 @@
 // apps/main-app/src/app/api/osint/analyze/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
+
+// Desactivar almacenamiento en caché en Next.js / Vercel para ejecutar siempre código dinámico
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 import { generatePayloadHash } from '../../../../lib/osint/crypto';
 
 // Importaciones de conectores de enriquecimiento OSINT existentes

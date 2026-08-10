@@ -51,6 +51,7 @@ export interface OsintAnalysisResult {
   timeline: EvidenceEvent[];
   evidences?: EvidenceEvent[];
   layer1Technical?: any;
+  layer2Reputation?: any;
   modules?: any;
 }
 
@@ -141,10 +142,14 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         throw new Error('Se requiere una razón social, dominio o identificador válido.');
       }
 
-      // 2. Petición al Endpoint de Análisis
+      // 2. Petición al Endpoint de Análisis con cabeceras strict anti-caché
       const response = await fetch('/api/osint/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+        },
         body: JSON.stringify(payload),
       });
 
@@ -155,7 +160,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
       }
 
       // 3. Normalización y Mapeo de Banderas Rojas (Capa 3) a la Matriz de Riesgo
-      const rawFlags = result.summary?.allFlags || result.riskMatrix || result.analysis?.matrixFindings || [];
+      const rawFlags = result.riskMatrix || result.summary?.allFlags || result.analysis?.matrixFindings || [];
 
       const mappedRiskMatrix: RiskMatrixPoint[] = rawFlags.map((item: any, idx: number) => {
         if (typeof item === 'string') {
@@ -200,15 +205,15 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
 
       // 5. Construcción de Resumen Ejecutivo Consolidado
       const summary: ExecutiveSummary = {
-        targetName: payload.companyName || payload.domain || 'Objetivo Desconocido',
-        targetTaxId: payload.rfc || '',
-        globalScore: result.summary?.overallRiskScore ?? result.summary?.globalScore ?? 0,
-        riskScore: result.summary?.overallRiskScore ?? result.summary?.riskScore ?? 0,
-        overallRisk: result.summary?.overallRiskLevel ?? result.summary?.overallRisk ?? 'LOW',
-        verdict: result.summary?.verdict || (result.summary?.overallRiskScore > 40 ? 'Requiere Revisión Manual' : 'Bajo Riesgo Técnico'),
-        keyFindings: result.summary?.criticalAlerts || mappedRiskMatrix.map((m) => m.title),
-        analyzedAt: new Date().toISOString(),
-        flagsCount: {
+        targetName: result.summary?.targetName || payload.companyName || payload.domain || 'Objetivo Desconocido',
+        targetTaxId: result.summary?.targetTaxId || payload.rfc || '',
+        globalScore: result.summary?.globalScore ?? (100 - (result.summary?.riskScore ?? 0)),
+        riskScore: result.summary?.riskScore ?? result.summary?.overallRiskScore ?? 0,
+        overallRisk: result.summary?.overallRisk ?? result.summary?.overallRiskLevel ?? 'LOW',
+        verdict: result.summary?.verdict || (result.summary?.riskScore > 40 ? 'Requiere Revisión Manual' : 'Bajo Riesgo Técnico'),
+        keyFindings: result.summary?.keyFindings || result.summary?.criticalAlerts || mappedRiskMatrix.map((m) => m.title),
+        analyzedAt: result.summary?.analyzedAt || new Date().toISOString(),
+        flagsCount: result.summary?.flagsCount || {
           critical: mappedRiskMatrix.filter((m) => m.severity === 'CRITICAL').length,
           high: mappedRiskMatrix.filter((m) => m.severity === 'HIGH').length,
           medium: mappedRiskMatrix.filter((m) => m.severity === 'MEDIUM').length,
@@ -224,6 +229,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         evidences: rawEvidences,
         riskMatrix: mappedRiskMatrix,
         layer1Technical: result.layer1Technical,
+        layer2Reputation: result.layer2Reputation,
         modules: result.modules || {},
       };
 
