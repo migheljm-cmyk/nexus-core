@@ -18,6 +18,11 @@ export default function OsintDashboardPage() {
     downloadPdfReport,
   } = useOsintAnalysis();
 
+  // Función handler para garantizar que el formulario dispare la actualización de estado
+  const handleStartAnalysis = async (formData: any) => {
+    await runAnalysis(formData);
+  };
+
   return (
     <main className="min-h-screen bg-slate-950 text-emerald-400 p-6 font-mono">
       {/* HEADER DE CONSOLA CYBER-FORENSICS */}
@@ -51,7 +56,11 @@ export default function OsintDashboardPage() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* PANEL IZQUIERDO: FORMULARIO DE INGESTIÓN */}
         <div className="lg:col-span-4 space-y-6">
-          <OsintForm onAnalyze={runAnalysis} isLoading={isAnalyzing} />
+          <OsintForm 
+            onAnalyze={handleStartAnalysis} 
+            onSubmit={handleStartAnalysis}
+            isLoading={isAnalyzing} 
+          />
         </div>
 
         {/* PANEL DERECHO: RESULTADOS Y VISUALIZADORES */}
@@ -67,7 +76,7 @@ export default function OsintDashboardPage() {
                 onDownloadPdf={downloadPdfReport}
               />
 
-              {/* MÓDULOS DE ENRIQUECIMIENTO EN TIEMPO REAL (Domain Risk, SAT 69-B, OpenSanctions) */}
+              {/* MÓDULOS DE ENRIQUECIMIENTO EN TIEMPO REAL */}
               {(data as any)?.modules && (
                 <div className="bg-slate-900/60 border border-slate-800 rounded-lg p-4">
                   <OsintReportView report={data} />
