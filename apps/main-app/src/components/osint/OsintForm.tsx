@@ -2,8 +2,7 @@
 'use client';
 
 import React, { useState } from 'react';
-// Importación con ruta relativa adecuada a src/hooks/
-import { useOsintAnalysis, OsintFormData } from '../../hooks/useOsintAnalysis';
+import { OsintFormData } from '../../hooks/useOsintAnalysis';
 import { Search, Terminal, AlertTriangle } from 'lucide-react';
 
 export interface OsintFormProps {
@@ -21,46 +20,53 @@ export const OsintForm: React.FC<OsintFormProps> = ({
   isLoading: externalIsLoading,
   loading: externalLoading,
 }) => {
-  // Invocación del hook con fallback seguro
-  const hook = useOsintAnalysis();
-
   const [companyName, setCompanyName] = useState<string>('');
   const [taxId, setTaxId] = useState<string>('');
   const [domain, setDomain] = useState<string>('');
   const [email, setEmail] = useState<string>('');
+  const [formError, setFormError] = useState<string | null>(null);
 
-  // Resolver estados prioritarios (props vs hook)
-  const isExecuting = externalIsLoading ?? externalLoading ?? hook.isAnalyzing;
-  const activeError = hook.error;
+  const isExecuting = externalIsLoading ?? externalLoading ?? false;
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setFormError(null);
     
     const cleanCompany = companyName.trim();
     const cleanTaxId = taxId.trim();
     const cleanDomain = domain.trim();
     const cleanEmail = email.trim();
 
-    // Requisito mínimo: al menos uno de los identificadores principales debe existir
-    if (!cleanCompany && !cleanDomain && !cleanTaxId && !cleanEmail) return;
+    // Requisito mínimo
+    if (!cleanCompany && !cleanDomain && !cleanTaxId && !cleanEmail) {
+      setFormError('Por favor ingrese al menos una razón social, dominio o correo.');
+      return;
+    }
 
     if (onAnalysisStart) onAnalysisStart();
 
-    // Construcción del payload enriquecido para permitir el escaneo de Capa 1 y Capa 3
+    // Garantizar que el dominio y correo viajen explícitamente al Handler superior de la Página
     const payload: OsintFormData = {
+      targetId: cleanCompany || cleanDomain || cleanTaxId || cleanEmail,
       companyName: cleanCompany,
       taxId: cleanTaxId || undefined,
+      rfc: cleanTaxId || undefined,
       domain: cleanDomain || undefined,
       email: cleanEmail || undefined,
       domainOrEmail: cleanDomain || cleanEmail || undefined,
     };
 
-    // Handler de ejecución prioritario
-    const analyzeFn = onAnalyze || onSubmit || hook.runAnalysis || hook.analyze;
+    // Usar estrictamente las funciones pasadas por props desde OsintDashboardPage
+    const analyzeFn = onAnalyze || onSubmit;
 
     if (typeof analyzeFn === 'function') {
-      // Se envía el payload de objeto para que el backend reconozca dominio, RFC y razón social
-      await analyzeFn(payload);
+      try {
+        await analyzeFn(payload);
+      } catch (err: any) {
+        setFormError(err.message || 'Error al enviar la consulta.');
+      }
+    } else {
+      console.warn('[OsintForm] No se proporcionó la prop onAnalyze u onSubmit.');
     }
   };
 
@@ -136,10 +142,10 @@ export const OsintForm: React.FC<OsintFormProps> = ({
           </div>
         </div>
 
-        {activeError && (
+        {formError && (
           <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-xs font-mono flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-red-500 shrink-0" />
-            <span>Error en el análisis: {activeError}</span>
+            <span>Error en el análisis: {formError}</span>
           </div>
         )}
 
