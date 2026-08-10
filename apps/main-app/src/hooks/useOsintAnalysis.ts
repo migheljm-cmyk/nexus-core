@@ -19,7 +19,7 @@ export interface RiskMatrixPoint {
 
 export interface ExecutiveSummary {
   targetName: string;
-  targetTaxId?: string;
+  targetTaxId: string; // ✅ Ahora es string requerido (con fallback 'TAX-PENDING-001')
   globalScore: number;
   riskScore: number;
   overallRisk: RiskLevel;
