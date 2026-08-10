@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useCallback } from 'react';
 import { useOsintAnalysis } from '../../hooks/useOsintAnalysis';
 import { OsintForm } from '../../components/osint/OsintForm';
 import { RiskMatrix } from '../../components/osint/RiskMatrix';
@@ -18,10 +18,16 @@ export default function OsintDashboardPage() {
     downloadPdfReport,
   } = useOsintAnalysis();
 
-  // Función handler para garantizar que el formulario dispare la actualización de estado
-  const handleStartAnalysis = async (formData: any) => {
-    await runAnalysis(formData);
-  };
+  // Handler optimizado con memoización y depuración activa en consola
+  const handleStartAnalysis = useCallback(async (formData: any) => {
+    console.log('🚀 [UI_EVENT] Iniciando orquestación OSINT. Payload:', formData);
+    try {
+      await runAnalysis(formData);
+      console.log('✅ [UI_EVENT] Análisis completado con éxito.');
+    } catch (err) {
+      console.error('❌ [UI_EVENT] Error al ejecutar runAnalysis:', err);
+    }
+  }, [runAnalysis]);
 
   return (
     <main className="min-h-screen bg-slate-950 text-emerald-400 p-6 font-mono">

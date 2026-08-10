@@ -213,7 +213,30 @@ export async function POST(req: NextRequest) {
     const sslData = sslResult.status === 'fulfilled' ? sslResult.value : undefined;
     const serperData = serperResult.status === 'fulfilled' ? serperResult.value : undefined;
 
-    if (l1Data) {
+    // 🎯 EVALUACIÓN DE DOMINIO INEXISTENTE O INALCANZABLE (NXDOMAIN)
+    if (cleanTargetDomain && (!l1Data || !l1Data.ip?.ip)) {
+      calculatedRiskScore += 50; // Penalización severa por dominio no resoluble
+
+      matrixFindings.push({
+        id: 'RISK-DNS-NXDOMAIN',
+        title: 'Dominio Inalcanzable o Inexistente (NXDOMAIN)',
+        category: 'Infraestructura & Ciberseguridad',
+        severity: 'CRITICAL',
+        description: `El dominio [${cleanTargetDomain}] no resuelve a ninguna dirección IP pública o carece de registros DNS válidos. Riesgo alto de presencia web fantasma o abandonada.`,
+        evidence: `Fallo de resolución A/AAAA para ${cleanTargetDomain}`,
+      });
+
+      liveEvidences.push({
+        id: 'EV-DNS-FAIL',
+        timestamp: analyzedAt,
+        source: 'DNS Live Resolver & RDAP',
+        category: 'INFRASTRUCTURE' as const,
+        description: `CRÍTICO: Imposible resolver dirección IP para [${cleanTargetDomain}]. El servidor de nombres no responde o el dominio no existe.`,
+        status: 'CRITICAL' as const,
+      });
+    }
+
+    if (l1Data && l1Data.ip?.ip) {
       // Inyectar evidencia de Infraestructura IP y DNS en tiempo real
       liveEvidences.push({
         id: 'EV-L1-INFRA',
