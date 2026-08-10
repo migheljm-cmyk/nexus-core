@@ -1,21 +1,26 @@
 // apps/main-app/src/lib/osint/layer2/tlsResolver.ts
 
-import tls from 'node:tls';
-import { SslCertData } from '../types';
+import tls from 'tls';
 
-/**
- * Inspecciona el certificado SSL/TLS activo en el puerto 443 del dominio
- */
-export async function resolveSslCertificate(domain: string): Promise<SslCertData> {
+export interface SslCertificateData {
+  issuer: string | null;
+  validFrom: string | null;
+  validTo: string | null;
+  daysRemaining: number | null;
+  isValid: boolean;
+  selfSigned: boolean;
+}
+
+export async function resolveSslCertificate(domain: string): Promise<SslCertificateData> {
   return new Promise((resolve) => {
-    const cleanDomain = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const cleanDomain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
     const socket = tls.connect(
       {
         host: cleanDomain,
         port: 443,
         servername: cleanDomain,
-        rejectUnauthorized: false, // Permite inspeccionar incluso certificados vencidos o autofirmados
+        rejectUnauthorized: false, // Permitir inspección aunque esté vencido
         timeout: 5000,
       },
       () => {
@@ -34,26 +39,37 @@ export async function resolveSslCertificate(domain: string): Promise<SslCertData
             });
           }
 
-          const validFrom = cert.valid_from ? new Date(cert.valid_from).toISOString() : null;
-          const validTo = cert.valid_to ? new Date(cert.valid_to).toISOString() : null;
-
-          let daysRemaining: number | null = null;
-          if (validTo) {
-            const diffMs = new Date(validTo).getTime() - Date.now();
-            daysRemaining = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+          // Formatear issuer de manera segura para TS
+          let issuerStr = 'Desconocido';
+          if (cert.issuer) {
+            if (typeof cert.issuer === 'string') {
+              issuerStr = cert.issuer;
+            } else {
+              const rawO = cert.issuer.O || cert.issuer.CN;
+              if (Array.isArray(rawO)) {
+                issuerStr = rawO.join(' ');
+              } else if (typeof rawO === 'string') {
+                issuerStr = rawO;
+              } else {
+                issuerStr = 'Certificado Emitido por Entidad TLS';
+              }
+            }
           }
 
-          const issuer = typeof cert.issuer === 'object' ? cert.issuer.O || cert.issuer.CN || null : String(cert.issuer);
-          const subject = typeof cert.subject === 'object' ? cert.subject.O || cert.subject.CN || null : String(cert.subject);
+          const validToDate = cert.valid_to ? new Date(cert.valid_to) : null;
+          const now = new Date();
+          const daysRemaining = validToDate
+            ? Math.ceil((validToDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+            : null;
 
-          const selfSigned = issuer === subject && issuer !== null;
-          const isValid = socket.authorized && (daysRemaining === null || daysRemaining > 0);
+          const isValid = socket.authorized && daysRemaining !== null && daysRemaining > 0;
+          const selfSigned = cert.issuer && cert.subject ? cert.issuer.CN === cert.subject.CN : false;
 
           socket.destroy();
           return resolve({
-            issuer,
-            validFrom,
-            validTo,
+            issuer: issuerStr,
+            validFrom: cert.valid_from || null,
+            validTo: cert.valid_to || null,
             daysRemaining,
             isValid,
             selfSigned,
