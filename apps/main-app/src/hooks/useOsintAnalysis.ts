@@ -1,3 +1,5 @@
+// apps/main-app/src/hooks/useOsintAnalysis.ts
+
 import { useState, useCallback } from 'react';
 
 // --- CONTRATOS DE DATOS OSINT ---
@@ -12,11 +14,12 @@ export interface RiskMatrixPoint {
   probability: 'LOW' | 'MEDIUM' | 'HIGH';
   severity: RiskLevel;
   description: string;
+  evidence?: string;
 }
 
 export interface ExecutiveSummary {
   targetName: string;
-  targetTaxId: string;
+  targetTaxId?: string;
   globalScore: number;
   riskScore: number;
   overallRisk: RiskLevel;
@@ -35,7 +38,7 @@ export interface EvidenceEvent {
   id: string;
   timestamp: string;
   source: string;
-  category: 'CORPORATE' | 'GEOLOCATION' | 'COMMUNICATION' | 'FINANCIAL' | 'COMPLIANCE';
+  category: 'CORPORATE' | 'GEOLOCATION' | 'COMMUNICATION' | 'FINANCIAL' | 'COMPLIANCE' | 'INFRASTRUCTURE';
   description: string;
   status: 'VERIFIED' | 'SUSPICIOUS' | 'CRITICAL' | 'UNVERIFIED';
 }
@@ -47,6 +50,7 @@ export interface OsintAnalysisResult {
   riskMatrix: RiskMatrixPoint[];
   timeline: EvidenceEvent[];
   evidences?: EvidenceEvent[];
+  layer1Technical?: any;
   modules?: any;
 }
 
@@ -82,7 +86,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
   const [data, setData] = useState<OsintAnalysisResult | null>(null);
 
   /**
-   * Mapea el nivel de severidad a cadenas 'LOW' | 'MEDIUM' | 'HIGH' para la Matriz Visual 3x3
+   * Mapea severidad a coordenadas visuales 'LOW' | 'MEDIUM' | 'HIGH' para RiskMatrix (3x3)
    */
   const mapSeverityToMatrixCoord = (severity: string): 'LOW' | 'MEDIUM' | 'HIGH' => {
     const sev = (severity || '').toUpperCase();
@@ -92,31 +96,34 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
   };
 
   /**
-   * Ejecuta el análisis OSINT llamando a la API Route /api/osint/analyze
+   * Ejecuta el análisis OSINT enviando el payload al backend
    */
   const runAnalysis = useCallback(async (targetQuery: OsintFormData | string) => {
     setIsAnalyzing(true);
     setError(null);
 
     try {
-      // 1. Extraer y construir el Payload completo recolectado por la UI
+      // 1. Construir Payload
       let payload: Record<string, any> = {};
 
       if (typeof targetQuery === 'string') {
+        const cleanQuery = targetQuery.trim();
         payload = {
-          targetId: targetQuery.trim(),
-          companyName: targetQuery.trim(),
+          targetId: cleanQuery,
+          companyName: cleanQuery,
+          domain: cleanQuery.includes('.') && !cleanQuery.includes('@') ? cleanQuery : '',
+          email: cleanQuery.includes('@') ? cleanQuery : '',
         };
       } else if (typeof targetQuery === 'object' && targetQuery !== null) {
-        // Manejar correos / dominios combinados en domainOrEmail si el formulario los envía en ese campo
         let domain = targetQuery.domain || '';
         let email = targetQuery.email || '';
 
         if (targetQuery.domainOrEmail) {
-          if (targetQuery.domainOrEmail.includes('@')) {
-            email = targetQuery.domainOrEmail.trim();
+          const cleanValue = targetQuery.domainOrEmail.trim();
+          if (cleanValue.includes('@')) {
+            email = cleanValue;
           } else {
-            domain = targetQuery.domainOrEmail.trim();
+            domain = cleanValue;
           }
         }
 
@@ -131,10 +138,10 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
       }
 
       if (!payload.targetId && !payload.companyName && !payload.domain && !payload.rfc && !payload.email) {
-        throw new Error('Se requiere un ID de objetivo, nombre de empresa, dominio o correo válido.');
+        throw new Error('Se requiere una razón social, dominio o identificador válido.');
       }
 
-      // 2. Petición POST con el Payload enriquecido
+      // 2. Petición al Endpoint de Análisis
       const response = await fetch('/api/osint/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -147,46 +154,77 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
         throw new Error(result.error || 'Error al ejecutar el análisis OSINT.');
       }
 
-      // 3. Transformación y mapeo estricto para RiskMatrix.tsx y EvidenceTimeline.tsx
-      const rawMatrix = result.riskMatrix || result.analysis?.matrixFindings || [];
-      const mappedRiskMatrix: RiskMatrixPoint[] = rawMatrix.map((item: any, idx: number) => {
-        // Si el item viene como string básico
+      // 3. Normalización y Mapeo de Banderas Rojas (Capa 3) a la Matriz de Riesgo
+      const rawFlags = result.summary?.allFlags || result.riskMatrix || result.analysis?.matrixFindings || [];
+
+      const mappedRiskMatrix: RiskMatrixPoint[] = rawFlags.map((item: any, idx: number) => {
         if (typeof item === 'string') {
           return {
             id: `risk-${idx}`,
-            title: `Hallazgo OSINT #${idx + 1}`,
-            category: 'OSINT',
-            impact: (idx % 2 === 0 ? 'HIGH' : 'MEDIUM') as 'LOW' | 'MEDIUM' | 'HIGH',
-            probability: 'HIGH' as 'LOW' | 'MEDIUM' | 'HIGH',
-            severity: 'HIGH' as RiskLevel,
+            title: `Alerta #${idx + 1}`,
+            category: 'INFRASTRUCTURE',
+            impact: 'HIGH',
+            probability: 'HIGH',
+            severity: 'HIGH',
             description: item,
           };
         }
 
-        const sev = (item.severity || 'MEDIUM').toUpperCase();
+        const sev = (item.severity || 'MEDIUM').toUpperCase() as RiskLevel;
         return {
           id: item.id || `risk-${idx}`,
-          title: item.title || item.label || `Hallazgo ${idx + 1}`,
-          category: item.category || 'OSINT',
+          title: item.title || item.code || `Hallazgo ${idx + 1}`,
+          category: item.category || 'INFRASTRUCTURE',
           impact: mapSeverityToMatrixCoord(sev),
-          probability: item.probability && typeof item.probability === 'string' 
-            ? (item.probability.toUpperCase() as any) 
-            : 'HIGH',
-          severity: (sev === 'CRITICAL' ? 'CRITICAL' : sev === 'HIGH' ? 'HIGH' : sev === 'LOW' ? 'LOW' : 'MEDIUM') as RiskLevel,
+          probability: item.probability ? (String(item.probability).toUpperCase() as any) : 'HIGH',
+          severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].includes(sev) ? sev : 'MEDIUM',
           description: item.description || '',
+          evidence: item.evidence || '',
         };
       });
 
-      const rawEvidences = result.evidences || result.timeline || [];
+      // 4. Mapeo de Evidencias / Lógica de Tiempo
+      const rawEvidences: EvidenceEvent[] = result.evidences || result.timeline || [];
+
+      // Si no vienen evidencias explícitas pero tenemos Capa 1, creamos un evento sintáctico
+      if (rawEvidences.length === 0 && result.layer1Technical) {
+        rawEvidences.push({
+          id: 'ev-layer1',
+          timestamp: result.layer1Technical.timestamp || new Date().toISOString(),
+          source: 'DNS/WHOIS/RDAP',
+          category: 'INFRASTRUCTURE',
+          description: `Escaneo técnico completado para ${result.layer1Technical.domain}. IP: ${result.layer1Technical.ip?.ip || 'N/A'}.`,
+          status: 'VERIFIED',
+        });
+      }
+
+      // 5. Construcción de Resumen Ejecutivo Consolidado
+      const summary: ExecutiveSummary = {
+        targetName: payload.companyName || payload.domain || 'Objetivo Desconocido',
+        targetTaxId: payload.rfc || '',
+        globalScore: result.summary?.overallRiskScore ?? result.summary?.globalScore ?? 0,
+        riskScore: result.summary?.overallRiskScore ?? result.summary?.riskScore ?? 0,
+        overallRisk: result.summary?.overallRiskLevel ?? result.summary?.overallRisk ?? 'LOW',
+        verdict: result.summary?.verdict || (result.summary?.overallRiskScore > 40 ? 'Requiere Revisión Manual' : 'Bajo Riesgo Técnico'),
+        keyFindings: result.summary?.criticalAlerts || mappedRiskMatrix.map((m) => m.title),
+        analyzedAt: new Date().toISOString(),
+        flagsCount: {
+          critical: mappedRiskMatrix.filter((m) => m.severity === 'CRITICAL').length,
+          high: mappedRiskMatrix.filter((m) => m.severity === 'HIGH').length,
+          medium: mappedRiskMatrix.filter((m) => m.severity === 'MEDIUM').length,
+          low: mappedRiskMatrix.filter((m) => m.severity === 'LOW').length,
+        },
+      };
 
       const formattedResult: OsintAnalysisResult = {
-        caseId: result.caseId,
-        hashSha256: result.hashSha256,
-        summary: result.summary,
+        caseId: result.caseId || `CASE-${Date.now().toString(36).toUpperCase()}`,
+        hashSha256: result.hashSha256 || result.auditTrail?.payloadHash || '',
+        summary,
         timeline: rawEvidences,
         evidences: rawEvidences,
         riskMatrix: mappedRiskMatrix,
-        modules: result.modules,
+        layer1Technical: result.layer1Technical,
+        modules: result.modules || {},
       };
 
       setData(formattedResult);
@@ -200,7 +238,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
   }, []);
 
   /**
-   * Descarga el reporte PDF criptográfico
+   * Descarga del reporte PDF criptográfico
    */
   const downloadPdfReport = useCallback(async () => {
     if (!data) {
@@ -226,7 +264,7 @@ export function useOsintAnalysis(): UseOsintAnalysisReturn {
       });
 
       if (!response.ok) {
-        const errorJson = await response.json();
+        const errorJson = await response.json().catch(() => ({}));
         throw new Error(errorJson.error || 'Error en la generación del PDF.');
       }
 

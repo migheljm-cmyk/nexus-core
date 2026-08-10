@@ -1,10 +1,19 @@
+// apps/main-app/src/app/api/osint/analyze/route.ts
+
 import { NextRequest, NextResponse } from 'next/server';
 import { generatePayloadHash } from '../../../../lib/osint/crypto';
 
-// Importaciones de conectores de enriquecimiento OSINT
+// Importaciones de conectores de enriquecimiento OSINT existentes
 import { analyzeDomainRisk } from '../../../../lib/osint/providers/tldRisk';
 import { analyzeSatAndRegistry } from '../../../../lib/osint/providers/satCheck';
 import { analyzeGlobalSanctionsAndGeo } from '../../../../lib/osint/providers/openSanctions';
+
+// Importaciones de Capa 1 y Capa 2 (Infraestructura Real & Certificados)
+import { getLayer1Data } from '../../../../lib/osint/actions/getLayer1Data';
+import { resolveSslCertificate } from '../../../../lib/osint/layer2/tlsResolver';
+import { resolveSerperDorks } from '../../../../lib/osint/layer2/serperResolver';
+import { evaluateAllFlags } from '../../../../lib/osint/evaluators/flagEngine';
+import { Layer2ReputationResult } from '../../../../lib/osint/types';
 
 // Importaciones con manejo seguro ante paquetes en desarrollo
 import * as DatabasePackage from '@nexus/database';
@@ -23,7 +32,7 @@ export async function POST(req: NextRequest) {
     const targetId = body.targetId || body.companyName || body.domain || body.rfc;
     const domainInput = (body.domain || '').trim();
     const rfcInput = (body.rfc || '').trim();
-    const emailInput = (body.email || body.contactEmail || '').trim().toLowerCase();
+    const emailInput = (body.email || body.contactEmail || body.domainOrEmail || '').trim().toLowerCase();
     const mercantileFolioInput = body.mercantileFolio;
     const declaredCountryCode = body.declaredCountryCode || 'MX';
 
@@ -55,12 +64,16 @@ export async function POST(req: NextRequest) {
 
     // Identificar si la entrada principal es un dominio
     const isDomainInput = companyName.includes('.') && !companyName.includes(' ');
-    const targetDomain = domainInput || (isDomainInput ? companyName : undefined);
+    const rawTargetDomain = domainInput || (isDomainInput ? companyName : undefined);
+    const cleanTargetDomain = rawTargetDomain
+      ? rawTargetDomain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+      : undefined;
+
     const targetRfc = rfcInput || (taxId !== 'TAX-PENDING-001' ? taxId : undefined);
 
     let liveEvidences: any[] = [];
     const matrixFindings: any[] = [];
-    let calculatedRiskScore = 15; // Score base inicial para empresa en evaluación
+    let calculatedRiskScore = 0; // Se calcula dinámicamente según banderas reales
 
     // -------------------------------------------------------------
     // 2. REGLAS DE VALIDACIÓN CRUZADA (CROSS-VALIDATION ENGINE)
@@ -95,7 +108,7 @@ export async function POST(req: NextRequest) {
     }
 
     // B. Regla: Inconsistencia entre Dominio Web Declarado y Correo
-    if (targetDomain && emailDomain && !isFreeEmail && !targetDomain.includes(emailDomain)) {
+    if (cleanTargetDomain && emailDomain && !isFreeEmail && !cleanTargetDomain.includes(emailDomain)) {
       calculatedRiskScore += 20;
 
       matrixFindings.push({
@@ -103,30 +116,36 @@ export async function POST(req: NextRequest) {
         title: 'Discrepancia Dominio Web vs. Email',
         category: 'Infraestructura & Red',
         severity: 'MEDIUM',
-        description: `El dominio web [${targetDomain}] no coincide con la extensión del correo registrado [@${emailDomain}].`
+        description: `El dominio web [${cleanTargetDomain}] no coincide con la extensión del correo registrado [@${emailDomain}].`
       });
     }
 
     // -------------------------------------------------------------
-    // 3. EJECUCIÓN PARALELA: LIVE PROSPECTING + ENRICHMENT MODULES
+    // 3. EJECUCIÓN PARALELA: LIVE PROSPECTING + ENRICHMENT + CAPA 1 Y 2
     // -------------------------------------------------------------
     const [
       ocResResult,
-      dnsResResult,
+      layer1Result,
+      sslResult,
+      serperResult,
       domainRiskModule,
       satCheckModule,
       openSanctionsModule
     ] = await Promise.allSettled([
       // A. OpenCorporates Live
       fetch(`https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(companyName)}`),
-      // B. DNS Live
-      isDomainInput ? fetch(`https://dns.google/resolve?name=${companyName}&type=A`) : Promise.resolve(null),
+      // B. Capa 1 Real (DNS, WHOIS/RDAP, IPinfo)
+      cleanTargetDomain ? getLayer1Data(cleanTargetDomain) : Promise.resolve(undefined),
+      // C. Capa 2 SSL Real (TLS Socket Inspection)
+      cleanTargetDomain ? resolveSslCertificate(cleanTargetDomain) : Promise.resolve(undefined),
+      // D. Capa 2 Serper Dorks (Google Fraud Search)
+      resolveSerperDorks(companyName || cleanTargetDomain || ''),
       // Módulo 1: Domain Risk
-      targetDomain ? analyzeDomainRisk(targetDomain) : Promise.resolve(undefined),
+      cleanTargetDomain ? analyzeDomainRisk(cleanTargetDomain) : Promise.resolve(undefined),
       // Módulo 2: SAT & Registros México
       targetRfc ? analyzeSatAndRegistry(targetRfc, mercantileFolioInput) : Promise.resolve(undefined),
       // Módulo 3: OpenSanctions & GeoIP
-      analyzeGlobalSanctionsAndGeo(companyName, targetDomain, declaredCountryCode)
+      analyzeGlobalSanctionsAndGeo(companyName, cleanTargetDomain, declaredCountryCode)
     ]);
 
     let ocCompanyFound = false;
@@ -184,39 +203,59 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // B. Procesamiento DNS Live
-    if (dnsResResult.status === 'fulfilled' && dnsResResult.value && dnsResResult.value.ok) {
-      try {
-        const dnsData = await dnsResResult.value.json();
-        const ips = dnsData.Answer?.map((a: any) => a.data).join(', ') || 'Sin A-Record público';
+    // B. Procesamiento Capa 1 & Capa 2 Reales (DNS, WHOIS, IPinfo, SSL)
+    const l1Data = layer1Result.status === 'fulfilled' ? layer1Result.value : undefined;
+    const sslData = sslResult.status === 'fulfilled' ? sslResult.value : undefined;
+    const serperData = serperResult.status === 'fulfilled' ? serperResult.value : undefined;
 
-        liveEvidences.push({
-          id: 'EV-02',
-          timestamp: analyzedAt,
-          source: 'DNS & Infrastructure Intelligence',
-          category: 'COMMUNICATION' as const,
-          description: `Resolución de red de dominio [${companyName}]. Servidores IP activos: [${ips}].`,
-          status: dnsData.Answer ? ('VERIFIED' as const) : ('SUSPICIOUS' as const),
+    if (l1Data) {
+      // Inyectar evidencia de Infraestructura IP y DNS en tiempo real
+      liveEvidences.push({
+        id: 'EV-L1-INFRA',
+        timestamp: analyzedAt,
+        source: 'DNS & IPinfo Live Engine',
+        category: 'COMMUNICATION' as const,
+        description: `Dominio [${l1Data.domain}]. IP: ${l1Data.ip?.ip || 'N/A'} (${l1Data.ip?.org || 'Desconocido'}, ${l1Data.ip?.country || 'N/A'}). Registros MX: ${l1Data.dns.mx.length}. SPF: ${l1Data.dns.hasSpf ? 'SÍ' : 'NO'}. DMARC: ${l1Data.dns.hasDmarc ? 'SÍ' : 'NO'}.`,
+        status: l1Data.ip ? ('VERIFIED' as const) : ('SUSPICIOUS' as const),
+      });
+
+      // Evaluar Banderas Rojas con flagEngine
+      const l2Result: Layer2ReputationResult = {
+        ssl: sslData || { issuer: null, validFrom: null, validTo: null, daysRemaining: null, isValid: false, selfSigned: false },
+        serperDorks: serperData,
+      };
+
+      const realFlags = evaluateAllFlags(l1Data, l2Result);
+
+      realFlags.forEach((flag) => {
+        matrixFindings.push({
+          id: flag.id,
+          title: flag.title,
+          category: 'Infraestructura & Ciberseguridad',
+          severity: flag.severity,
+          description: flag.description,
+          evidence: flag.evidence,
         });
 
-        if (!dnsData.Answer) calculatedRiskScore += 20;
-      } catch (e) {
-        console.warn('[OSINT_API] Error al procesar DNS live:', e);
-      }
-    } else if (!isDomainInput) {
-      liveEvidences.push({
-        id: 'EV-02',
-        timestamp: analyzedAt,
-        source: 'GeoLocation & Registry Cross-Check',
-        category: 'GEOLOCATION' as const,
-        description: ocCompanyFound 
-          ? 'Domicilio y jurisdicción coinciden con registros mercantiles vigentes.'
-          : 'Ubicación reportada pendiente de confirmación física en terreno.',
-        status: ocCompanyFound ? ('VERIFIED' as const) : ('SUSPICIOUS' as const),
+        // Penalizar score según severidad de la bandera real
+        if (flag.severity === 'CRITICAL') calculatedRiskScore += 40;
+        else if (flag.severity === 'HIGH') calculatedRiskScore += 25;
+        else if (flag.severity === 'MEDIUM') calculatedRiskScore += 10;
       });
     }
 
-    // C. Módulos de Enriquecimiento (Mapeo a Evidencias y Matriz 3x3)
+    if (sslData) {
+      liveEvidences.push({
+        id: 'EV-L2-SSL',
+        timestamp: analyzedAt,
+        source: 'TLS Socket Inspector',
+        category: 'COMPLIANCE' as const,
+        description: `Certificado SSL/TLS ${sslData.isValid ? 'VÁLIDO' : 'INVÁLIDO/VENCIDO'}. Emisor: ${sslData.issuer || 'Desconocido'}. Días restantes: ${sslData.daysRemaining ?? 'N/A'}.`,
+        status: sslData.isValid ? ('VERIFIED' as const) : ('CRITICAL' as const),
+      });
+    }
+
+    // C. Módulos adicionales de Enriquecimiento (Mapeo a Evidencias y Matriz 3x3)
     const domainRiskData = domainRiskModule.status === 'fulfilled' ? domainRiskModule.value : undefined;
     const satCheckData = satCheckModule.status === 'fulfilled' ? satCheckModule.value : undefined;
     const openSanctionsData = openSanctionsModule.status === 'fulfilled' ? openSanctionsModule.value : undefined;
@@ -300,12 +339,12 @@ export async function POST(req: NextRequest) {
     });
 
     // -------------------------------------------------------------
-    // 4. EJECUCIÓN DE AI ENGINE & DICTAMEN FINAL (ACCESO BLINDADO)
+    // 4. EJECUCIÓN DE AI ENGINE & DICTAMEN FINAL
     // -------------------------------------------------------------
-    let riskScore = Math.min(100, Math.max(10, calculatedRiskScore));
-    let verdict = riskScore > 50
-      ? `ALERTA DE RIESGO B2B (${riskScore}/100): Se identificaron inconsistencias operativas o banderas rojas en la entidad ${companyName}. Se recomienda auditoría documental extendida.`
-      : `DICTAMEN FAVORABLE (${riskScore}/100): La entidad ${companyName} no presenta coincidencias en listas de sanciones ni banderas rojas críticas en sus fuentes públicas.`;
+    let riskScore = Math.min(100, Math.max(0, calculatedRiskScore));
+    let verdict = riskScore > 40
+      ? `ALERTA DE RIESGO B2B (${riskScore}/100): Se identificaron inconsistencias operativas o banderas rojas en la infraestructura de ${companyName}. Se recomienda auditoría documental extendida.`
+      : `DICTAMEN FAVORABLE (${riskScore}/100): La entidad ${companyName} no presenta coincidencias críticas en su infraestructura ni listas de sanciones públicas.`;
       
     let keyFindings = matrixFindings.length > 0
       ? matrixFindings.map(m => m.description)
@@ -313,12 +352,11 @@ export async function POST(req: NextRequest) {
           ocCompanyFound 
             ? 'Entidad localizada con número de registro corporativo activo.'
             : 'Ausencia de registro mercantil público internacional bajo el nombre especificado.',
-          targetDomain ? `Evaluación de riesgo de dominio [${targetDomain}] completada.` : 'Sin dominio de red directo analizado.',
+          cleanTargetDomain ? `Evaluación de riesgo de dominio [${cleanTargetDomain}] completada sin anomalías.` : 'Sin dominio de red directo analizado.',
           'Auditoría y trazabilidad criptográfica completada.',
         ];
 
     try {
-      // Invocación segura sin presuponer la estructura exacta exportada por @nexus/ai-engine
       const pkg = AiEnginePackage as any;
       const aiEngine = pkg.OsintEngineService || pkg.default || pkg;
 
@@ -350,7 +388,7 @@ export async function POST(req: NextRequest) {
       targetTaxId: taxId,
       globalScore: Math.max(0, 100 - riskScore),
       riskScore,
-      overallRisk: riskScore > 50 ? ('HIGH' as const) : ('LOW' as const),
+      overallRisk: riskScore >= 70 ? ('CRITICAL' as const) : riskScore >= 40 ? ('HIGH' as const) : riskScore >= 15 ? ('MEDIUM' as const) : ('LOW' as const),
       verdict,
       keyFindings,
       flagsCount,
@@ -360,7 +398,9 @@ export async function POST(req: NextRequest) {
     const enrichmentModules = {
       domainRisk: domainRiskData,
       satCheck: satCheckData,
-      openSanctions: openSanctionsData
+      openSanctions: openSanctionsData,
+      layer1Technical: l1Data,
+      layer2Reputation: { ssl: sslData, serperDorks: serperData }
     };
 
     // Sellado Criptográfico SHA-256
@@ -375,8 +415,10 @@ export async function POST(req: NextRequest) {
         targetId,
         summary,
         evidences: liveEvidences,
-        timeline: liveEvidences, // Duplicado explícito para que EvidenceTimeline.tsx siempre tenga datos
-        riskMatrix: matrixFindings, // Datos directos para popular RiskMatrix.tsx (Matriz 3x3)
+        timeline: liveEvidences,
+        riskMatrix: matrixFindings,
+        layer1Technical: l1Data,
+        layer2Reputation: { ssl: sslData, serperDorks: serperData },
         modules: enrichmentModules,
         hashSha256,
       },

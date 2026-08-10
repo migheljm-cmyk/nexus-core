@@ -1,9 +1,10 @@
+// apps/main-app/src/components/osint/OsintForm.tsx
 'use client';
 
 import React, { useState } from 'react';
-// Ruta relativa corregida hacia src/hooks/
+// Importación con ruta relativa adecuada a src/hooks/
 import { useOsintAnalysis, OsintFormData } from '../../hooks/useOsintAnalysis';
-import { Shield, Search, Terminal, AlertTriangle } from 'lucide-react';
+import { Search, Terminal, AlertTriangle } from 'lucide-react';
 
 export interface OsintFormProps {
   onAnalyze?: (formData: OsintFormData | string) => Promise<void> | void;
@@ -34,22 +35,32 @@ export const OsintForm: React.FC<OsintFormProps> = ({
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!companyName && !domain && !taxId) return;
+    
+    const cleanCompany = companyName.trim();
+    const cleanTaxId = taxId.trim();
+    const cleanDomain = domain.trim();
+    const cleanEmail = email.trim();
+
+    // Requisito mínimo: al menos uno de los identificadores principales debe existir
+    if (!cleanCompany && !cleanDomain && !cleanTaxId && !cleanEmail) return;
 
     if (onAnalysisStart) onAnalysisStart();
 
+    // Construcción del payload enriquecido para permitir el escaneo de Capa 1 y Capa 3
     const payload: OsintFormData = {
-      companyName: companyName.trim(),
-      taxId: taxId.trim() || undefined,
-      domainOrEmail: domain.trim() || email.trim() || undefined,
+      companyName: cleanCompany,
+      taxId: cleanTaxId || undefined,
+      domain: cleanDomain || undefined,
+      email: cleanEmail || undefined,
+      domainOrEmail: cleanDomain || cleanEmail || undefined,
     };
 
-    // Ejecutar el handler externo si fue provisto por prop; de lo contrario, usar el del hook
-    const analyzeFn = onAnalyze || onSubmit || hook.analyze || hook.runAnalysis;
+    // Handler de ejecución prioritario
+    const analyzeFn = onAnalyze || onSubmit || hook.runAnalysis || hook.analyze;
 
     if (typeof analyzeFn === 'function') {
-      const targetQuery = companyName.trim() || domain.trim() || taxId.trim();
-      await analyzeFn(targetQuery || payload);
+      // Se envía el payload de objeto para que el backend reconozca dominio, RFC y razón social
+      await analyzeFn(payload);
     }
   };
 
@@ -135,7 +146,7 @@ export const OsintForm: React.FC<OsintFormProps> = ({
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            disabled={isExecuting || (!companyName && !domain && !taxId)}
+            disabled={isExecuting || (!companyName && !domain && !taxId && !email)}
             className="flex items-center gap-2 bg-[#22C55E] hover:bg-emerald-500 text-[#0D1117] font-mono font-bold text-xs uppercase tracking-wider px-6 py-3 rounded-lg shadow-lg shadow-emerald-950/20 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isExecuting ? (
