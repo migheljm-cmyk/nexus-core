@@ -29,6 +29,20 @@ const FREE_EMAIL_DOMAINS = new Set([
   'qq.com', '163.com', '126.com', 'gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com'
 ]);
 
+// =============================================================
+// TAREA 2: NORMALIZADOR DE NOMBRES COMERCIALES (Fuzzy Entity Cleansing)
+// =============================================================
+function cleanCompanyNameForSearch(rawName: string): string {
+  if (!rawName) return '';
+  return rawName
+    .replace(/Cp\./gi, 'Co.')             // Corrige errores tipográficos comunes (Cp. -> Co.)
+    .replace(/\bLtd\b(?!\.)/gi, 'Limited') // Normalización Ltd -> Limited
+    .replace(/\bCo\.(?!\s*Company)/gi, 'Company') // Normalización Co. -> Company
+    .replace(/[,.]/g, ' ')               // Eliminación de puntuación excedente
+    .replace(/\s+/g, ' ')                // Reducción de espacios múltiples
+    .trim();
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -67,6 +81,9 @@ export async function POST(req: NextRequest) {
       console.warn('[OSINT_API] Usando Target fallback para:', targetId);
     }
 
+    // TAREA 2: Normalización de nombre para prospección y registros internacionales
+    const cleanedCompanyName = cleanCompanyNameForSearch(companyName);
+
     // Identificar si la entrada principal es un dominio
     const isDomainInput = companyName.includes('.') && !companyName.includes(' ');
     const rawTargetDomain = domainInput || (isDomainInput ? companyName : undefined);
@@ -79,10 +96,39 @@ export async function POST(req: NextRequest) {
     let liveEvidences: any[] = [];
     const matrixFindings: any[] = [];
     let calculatedRiskScore = 0; // Se calcula dinámicamente según banderas reales
+    let isOpacityFlagged = false;
 
     // -------------------------------------------------------------
     // 2. REGLAS DE VALIDACIÓN CRUZADA (CROSS-VALIDATION ENGINE)
     // -------------------------------------------------------------
+
+    // TAREA 1: REGLA DE EVALUACIÓN DE OPACIDAD OPERATIVA
+    const hasDomain = Boolean(cleanTargetDomain);
+    const hasTaxId = Boolean(taxId && taxId !== 'TAX-PENDING-001');
+    const hasEmail = Boolean(emailInput);
+
+    if (!hasDomain && !hasTaxId && !hasEmail) {
+      isOpacityFlagged = true;
+      calculatedRiskScore += 45; // Penalización por opacidad e imposibilidad de auditoría técnica
+
+      matrixFindings.push({
+        id: 'RISK-OPACITY-01',
+        title: 'Opacidad de Red & Ausencia de Puntos de Verificación',
+        category: 'Trazabilidad & Operatividad',
+        severity: 'MEDIUM',
+        description: `La entidad [${companyName}] fue ingresada sin dominio web, correo corporativo ni identificador fiscal (RFC/USCC). Imposible validar infraestructura digital o registros de red directos.`,
+        evidence: 'Inexistencia de vector técnico para análisis de Capa 1 y Capa 2.',
+      });
+
+      liveEvidences.push({
+        id: 'EV-OPACITY-01',
+        timestamp: analyzedAt,
+        source: 'Nexus Core Due Diligence Engine',
+        category: 'COMPLIANCE' as const,
+        description: `ADVERTENCIA: Búsqueda limitada a prospección por nombre. Se recomienda solicitar al proveedor su Business License Number (USCC de China) o correo con dominio propio.`,
+        status: 'SUSPICIOUS' as const,
+      });
+    }
 
     // A. Regla: Email Gratuito / Informal en Entidad Corporativa
     let isFreeEmail = false;
@@ -137,8 +183,8 @@ export async function POST(req: NextRequest) {
       satCheckModule,
       openSanctionsModule
     ] = await Promise.allSettled([
-      // A. OpenCorporates Live
-      fetch(`https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(companyName)}`),
+      // A. OpenCorporates Live (Utilizando el nombre normalizado)
+      fetch(`https://api.opencorporates.com/v0.4/companies/search?q=${encodeURIComponent(cleanedCompanyName)}`),
       // B. Capa 1 Real (DNS, WHOIS/RDAP, IPinfo)
       cleanTargetDomain ? getLayer1Data(cleanTargetDomain) : Promise.resolve(undefined),
       // C. Capa 2 SSL Real (TLS Socket Inspection)
@@ -370,9 +416,16 @@ export async function POST(req: NextRequest) {
     // 4. EJECUCIÓN DE AI ENGINE & DICTAMEN FINAL
     // -------------------------------------------------------------
     let riskScore = Math.min(100, Math.max(0, calculatedRiskScore));
-    let verdict = riskScore > 40
-      ? `ALERTA DE RIESGO B2B (${riskScore}/100): Se identificaron inconsistencias operativas o banderas rojas en la infraestructura de ${companyName}. Se recomienda auditoría documental extendida.`
-      : `DICTAMEN FAVORABLE (${riskScore}/100): La entidad ${companyName} no presenta coincidencias críticas en su infraestructura ni listas de sanciones públicas.`;
+
+    // TAREA 3: Ajuste del Veredicto Final en Caso de Opacidad / Altas Incertidumbres
+    let verdict = '';
+    if (riskScore >= 40 && isOpacityFlagged) {
+      verdict = `REVISIÓN MANUAL REQUERIDA (Score ${riskScore}/100): La entidad no presenta vectores de red verificables ni identificadores fiscales directos. Se requiere solicitar licencia de funcionamiento (USCC/RFC) antes de emitir un dictamen de bajo riesgo.`;
+    } else if (riskScore > 40) {
+      verdict = `ALERTA DE RIESGO B2B (${riskScore}/100): Se identificaron inconsistencias operativas o banderas rojas en la infraestructura de ${companyName}. Se recomienda auditoría documental extendida.`;
+    } else {
+      verdict = `DICTAMEN FAVORABLE (${riskScore}/100): La entidad ${companyName} no presenta coincidencias críticas en su infraestructura ni listas de sanciones públicas.`;
+    }
       
     let keyFindings = matrixFindings.length > 0
       ? matrixFindings.map(m => m.description)

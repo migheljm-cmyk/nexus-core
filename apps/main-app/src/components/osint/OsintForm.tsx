@@ -37,7 +37,7 @@ export const OsintForm: React.FC<OsintFormProps> = ({
     const cleanDomain = domain.trim();
     const cleanEmail = email.trim();
 
-    // Requisito mínimo
+    // Requisito mínimo: Al menos uno debe estar presente
     if (!cleanCompany && !cleanDomain && !cleanTaxId && !cleanEmail) {
       setFormError('Por favor ingrese al menos una razón social, dominio o correo.');
       return;
@@ -86,12 +86,11 @@ export const OsintForm: React.FC<OsintFormProps> = ({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-mono font-semibold text-gray-300 uppercase tracking-wider mb-1.5">
-              Razón Social / Empresa *
+              Razón Social / Empresa
             </label>
             <input
               type="text"
-              required
-              placeholder="Ej. Acme Corp LLC"
+              placeholder="Ej. Dongguan KY Pneumatic Nail Cp., Limited"
               value={companyName}
               onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCompanyName(e.target.value)}
               disabled={isExecuting}
