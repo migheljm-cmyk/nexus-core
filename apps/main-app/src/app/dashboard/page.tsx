@@ -1,7 +1,6 @@
-// apps/main-app/src/app/dashboard/page.tsx
-
 import { createClient } from "@supabase/supabase-js";
 import Link from "next/link";
+import { DashboardHeaderActions } from "./DashboardHeaderActions";
 
 // Tenant predeterminado o extraído de la sesión/encabezados
 const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
@@ -13,17 +12,18 @@ const supabaseAdmin = createClient(
 );
 
 interface DashboardProps {
-  searchParams?: {
+  searchParams?: Promise<{
     query?: string;
     risk?: "critical" | "medium" | "low";
     status?: string;
-  };
+  }>;
 }
 
 export default async function DashboardOverviewPage({ searchParams }: DashboardProps) {
-  const query = searchParams?.query || "";
-  const risk = searchParams?.risk || "";
-  const status = searchParams?.status || "";
+  const resolvedSearchParams = (await searchParams) || {};
+  const query = resolvedSearchParams.query || "";
+  const risk = resolvedSearchParams.risk || "";
+  const status = resolvedSearchParams.status || "";
 
   // 1. Construcción de consulta dinámica sobre investigaciones según parámetros de búsqueda
   let investigationsQuery = supabaseAdmin
@@ -67,7 +67,7 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
 
   // 3. Cálculo de Métricas Globales (sobre los datos procesados)
   const totalInvestigations = investigations.length;
-  const highRiskCount = investigations.filter((inv) => inv.coi_score >= 70).length;
+  const highRiskCount = investigations.filter((inv) => (inv.coi_score || 0) >= 70).length;
   const avgCoiScore =
     totalInvestigations > 0
       ? Math.round(
@@ -78,7 +78,7 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-8 space-y-8">
-      {/* Encabezado del Dashboard */}
+      {/* Encabezado del Dashboard con Integración de Modal */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-6">
         <div>
           <div className="flex items-center gap-2">
@@ -95,11 +95,8 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded font-mono text-xs text-slate-400">
-            TENANT: <span className="text-slate-200">{DEFAULT_TENANT_ID.slice(0, 8)}...</span>
-          </div>
-        </div>
+        {/* Acciones del Header (Client Component con Modal de Ingesta) */}
+        <DashboardHeaderActions tenantId={DEFAULT_TENANT_ID} />
       </div>
 
       {/* Grid de Tarjetas de Métricas Globales */}
@@ -203,14 +200,14 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
         <div className="flex gap-2">
           <button
             type="submit"
-            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded py-2 transition-colors uppercase tracking-wider"
+            className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-bold rounded py-2 transition-colors uppercase tracking-wider font-mono text-xs"
           >
             Filtrar
           </button>
           {(query || risk || status) && (
             <Link
               href="/dashboard"
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-center transition-colors flex items-center justify-center"
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-center transition-colors flex items-center justify-center font-mono text-xs"
             >
               Limpiar
             </Link>
@@ -249,26 +246,26 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
                 >
                   <td className="p-3">
                     <div className="font-semibold text-slate-200">
-                      {inv.title}
+                      {inv.title || "SIN TÍTULO"}
                     </div>
                     <div className="text-[10px] text-slate-500 truncate max-w-[200px]">
                       {inv.id}
                     </div>
                   </td>
                   <td className="p-3 text-slate-300 font-sans font-medium">
-                    {inv.target_name}
+                    {inv.target_name || "N/A"}
                   </td>
                   <td className="p-3 font-bold">
                     <span
                       className={`px-2 py-0.5 rounded text-[11px] ${
-                        inv.coi_score >= 70
+                        (inv.coi_score || 0) >= 70
                           ? "bg-rose-950 text-rose-300 border border-rose-800"
-                          : inv.coi_score >= 40
+                          : (inv.coi_score || 0) >= 40
                           ? "bg-amber-950 text-amber-300 border border-amber-800"
                           : "bg-emerald-950 text-emerald-300 border border-emerald-800"
                       }`}
                     >
-                      {inv.coi_score} / 100
+                      {inv.coi_score || 0} / 100
                     </span>
                   </td>
                   <td className="p-3">
@@ -277,11 +274,13 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
                     </span>
                   </td>
                   <td className="p-3 text-slate-400">
-                    {new Date(inv.created_at).toLocaleDateString("es-MX", {
-                      day: "2-digit",
-                      month: "short",
-                      year: "numeric",
-                    })}
+                    {inv.created_at
+                      ? new Date(inv.created_at).toLocaleDateString("es-MX", {
+                          day: "2-digit",
+                          month: "short",
+                          year: "numeric",
+                        })
+                      : "N/A"}
                   </td>
                   <td className="p-3 text-right">
                     <Link
@@ -300,7 +299,7 @@ export default async function DashboardOverviewPage({ searchParams }: DashboardP
                     colSpan={6}
                     className="p-8 text-center text-slate-500 italic font-sans"
                   >
-                    No se encontraron investigaciones con los criterios seleccionados. Utiliza la API de Ingesta (<code className="text-slate-400">/api/v1/ingest</code>) para registrar nuevos objetivos o ajusta los filtros de búsqueda.
+                    No se encontraron investigaciones con los criterios seleccionados. Utiliza la opción de <strong className="text-emerald-400 font-mono font-normal">NUEVA_INVESTIGACIÓN</strong> o la API de Ingesta (<code className="text-slate-400">/api/v1/ingest</code>) para registrar nuevos objetivos.
                   </td>
                 </tr>
               )}

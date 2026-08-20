@@ -11,6 +11,15 @@ const nextConfig = {
     // Necesario para librerías de servidor como @react-pdf/renderer
     serverComponentsExternalPackages: ['@react-pdf/renderer'],
   },
+  async redirects() {
+    return [
+      {
+        source: '/',
+        destination: '/dashboard',
+        permanent: true,
+      },
+    ];
+  },
 };
 
 module.exports = nextConfig;

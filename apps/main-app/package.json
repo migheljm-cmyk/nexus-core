@@ -9,12 +9,17 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@hookform/resolvers": "^5.7.1",
     "@react-pdf/renderer": "^4.5.1",
     "@supabase/supabase-js": "^2.39.0",
+    "@xyflow/react": "^12.11.3",
+    "inngest": "^4.18.1",
     "lucide-react": "^0.378.0",
     "next": "^14.2.0",
     "react": "^18.3.0",
-    "react-dom": "^18.3.0"
+    "react-dom": "^18.3.0",
+    "react-hook-form": "^7.85.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
